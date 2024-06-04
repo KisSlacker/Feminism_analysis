@@ -1,0 +1,273 @@
+---
+title: "STM code"
+author: "KisSlacker"
+date: "2024-06-04"
+output: html_document
+---
+```{r}
+#需要使用的包
+#install.packages("textir")
+#install.packages("openxlsx")
+#install.packages("stm")
+#install.packages("stmCorrViz")
+#install.packages('huge')
+```
+
+```{r}
+library(textir)
+library(stm)
+library(openxlsx)
+library(stmCorrViz)
+library(huge)
+```
+1.数据的读取与预处理。
+```{r}
+data <- read.xlsx("分词结果.xlsx") #分词文档的处理结果为分词结果.csv，这里转换为xlsx文件使用
+#对象textProcessor的作用是将语料库预处理为stm可以利用的词袋，并生成documents、vocab、和meta三个重要变量，还可以根据设定的wordLength参数删除不在长度范围内的词，并进一步利用plotRemoved函数生成关于门槛设置与移除的document、word、token的数量的关系，从而确定接下来的lower.thresh参数
+#textProcessor 与 prepDocument不支持中文文本的预处理，因此请分词并清洗后导入构建词袋,英文文本无需进行此操作
+processed <- textProcessor(documents = data$Text,metadata = data,wordLengths = c(1,Inf))
+plotRemoved(processed$documents, lower.thresh = seq(1, 200, by = 100))
+#设置lower.thresh清洗词袋
+out <- prepDocuments(documents = processed$documents, vocab = processed$vocab, meta = processed$meta, lower.thresh = 15)
+docs <- out$documents
+vocab <- out$vocab
+meta <- out$meta
+```
+2. 主题与模型的选择
+```{r}
+#K值（topics数量）可以用searchK函数计算残差值、语意连贯性等四个指标来选择。
+storage <- searchK(out$documents, out$vocab, K = c(5,10,15,20,25,30,35,40,45,50,55,60), data = meta,prevalence = ~Keyword+s(Date))
+# 借助图表可视化的方式直观选择主题数
+par(mar=c(1,1,1,1))
+plot(storage)
+```
+
+```{r}
+#根据semantic cohenrence 和heldout likelihood 取最大，Residuals和lBound取最小的原则，将范围细化至25-30，并最终选取29作为K值
+storage1 <- searchK(out$documents, out$vocab, K = c(25,26,27,28,29,30), data = meta,prevalence = ~Keyword+s(Date))
+# 借助图表可视化的方式直观选择主题数
+par(mar=c(1,1,1,1))
+plot(storage1)
+```
+
+```{r}
+# stm有四个备选模型进行语义建模，这里可以看到四个模型的表现相近，最终选择了模型2，LDA模型
+femiSelect <- selectModel(out$documents, out$vocab, prevalence = ~Keyword+s(Date), K = 29,  max.em.its = 75, data = out$meta, runs = 20, seed = 8458159)
+# 绘制图形平均得分每种模型采用不同的图例
+plotModels(femiSelect, pch=c(1,2,3,4), legend.position="bottomright")
+# 例如：选择模型2
+# selectedmodel <- femiSelect$runout[[2]]
+```
+3. 建模
+```{r}
+#利用刚刚获取的参数进行stm建模，max.em.its = 75意味着在75次迭代内将误差缩小至可接受的范围
+femi_stm <- stm(documents = out$documents, vocab = out$vocab, K = 29, prevalence = ~Keyword+s(Date), max.em.its = 75, data = out$meta, init.type = "LDA")
+```
+4. 分析与可视化
+
+```{r}
+#这两个函数可以详细描述不同topic的高频词汇，n代表输出的词汇数量，这里选30个是为了方便话题命名。
+# labelTopics() Label topics by listing top words for selected topics 1 to 5.
+labelTopicsSel <- labelTopics(femi_stm, c(1:29),n=30)
+sink("labelTopics-selected0.txt", append=FALSE, split=TRUE)
+print(labelTopicsSel)
+sink()
+
+# sageLabels() 比 labelTopics() 输出更详细
+sink("stm-list-sagelabel0.txt", append=FALSE, split=TRUE)
+print(sageLabels(femi_stm),n=30)
+sink()
+```
+```{r}
+#寻找话题的代表性文本，这里只能展示分词清洗后的文本。上方数字为document编号.同时运行29个topics似乎可能导致程序崩溃。
+thought <- findThoughts(femi_stm,n=6,topics=19,texts = out$meta$Text)
+par(mar=c(1,1,1,1))
+plotQuote(thought)
+```
+
+```{r}
+#计算不同话题与Keyword的相关度
+out$meta$Keyword<-as.factor(out$meta$Keyword)
+# since we're preparing these coVariates by estimating their effects we call these estimated effects 'prep'
+# we're estimating Effects across all 20 topics, 1:20. We're using 'Keyword' and normalized 'day,' using the topic model femi_stm. 
+# The meta data file we call meta. We are telling it to generate the model while accounting for all possible uncertainty. Note: when estimating effects of one covariate, others are held at their mean
+prep <- estimateEffect(1:29 ~ Keyword+s(Date), femi_stm, meta=out$meta, uncertainty = "Global")
+summary(prep, topics=c(1:29))
+```
+
+```{r}
+#计算不同关键词的文本贡献度随时间的变动
+prep_D <- estimateEffect(1:29 ~ Keyword+s(Date), femi_stm, meta=out$meta, uncertainty = "Global")
+plot(prep_D, covariate = "Date", model = femi_stm,
+     method = "continuous", xlab = "year", moderator = "Keyword",
+     moderator.value = "0", linecol = "blue", ylim = c(0, 0.1),
+     printlegend = FALSE)
+plot(prep_D, covariate = "Date", model = femi_stm,
+     method = "continuous", xlab = "year", moderator = "Keyword",
+     moderator.value = "1", linecol = "red", add = TRUE,
+     printlegend = FALSE)
+legend(0, 0.06, c("女性主义", "女权主义"),
+       lwd = 2, col = c("blue", "red"))
+```
+
+```{r}
+#计算不同topic对总文本的贡献度
+plot(femi_stm, type = "summary",xlim=c(0,0.1))
+```
+
+
+
+
+```{r}
+#计算与呈现话题对不同Keyword的距离
+plot(prep, covariate = "Keyword", 
+     model = femi_stm, method = "difference",
+     cov.value1 = "0", cov.value2 = "1",
+     xlab = "女性主义 ... 女权主义",
+     main = "女性主义 vs. 女权主义",
+     xlim = c(-.1, .1), labeltype = "custom",
+     )
+```
+
+```{r}
+#计算任意两个话题之间的词汇关联度
+plot(femi_stm, type = "perspectives", topics = c(1,12) ,text.cex = 1)
+```
+
+```{r}
+#根据话题关联度与相关关系进行聚类与网络化
+#连线表示相关，弱相关或者不相关不予显示
+mod.out.corr <- topicCorr(femi_stm,method = 'huge')
+plot(mod.out.corr,verbose=TRUE)
+```
+```{r}
+#提取话题之间的相关度数据及其在网络中的位置，进行进一步的网络分析
+top_cor_df <- mod.out.corr$cor
+cor_num <- top_cor_df@x
+cor_coor <-top_cor_df@i
+cor_matri <-array(0,dim=c(29,29))
+ran <-seq(1,392)
+count=1
+cor_list<-c()
+source_list<-c()
+target_list<-c()
+weight_list<-c()
+for (num in ran){
+  source_list <-append(source_list,paste("topic ",as.character(count)))
+  target_list <-append(target_list,paste("topic ",as.character(cor_coor[num]+1)))
+  if (cor_num[num]>0){
+    cor_list <- append(cor_list,1)
+    weight_list <-append(weight_list,cor_num[num])
+  }
+  else{
+    cor_list <- append(cor_list,-1)
+    weight_list <-append(weight_list,-cor_num[num])
+  }
+  if (num<392){
+      if (cor_coor[num]>cor_coor[num+1] ){
+    count=count+1
+  }
+  }
+}
+cor_df<- data.frame(source=source_list,target=target_list,weight=weight_list,correlation=cor_list)
+write.xlsx(cor_df,file="cor_matrix.xlsx")
+```
+
+```{r}
+#在话题基础上进一步聚类形成可视化框架
+stmCorrViz(femi_stm, "stm-interactive-correlation.html", 
+           documents_raw=data$documents, documents_matrix=out$documents)
+```
+上述内容在建模时没有加入Keyword作为content变量进行考虑，接下来将进一步建模并重新评估上述内容
+
+```{r}
+
+femi_Content <- stm(out$documents, out$vocab, K = 29, prevalence = ~Keyword +s(Date), content = ~Keyword, max.em.its = 75, data = out$meta, init.type = "LDA")
+
+```
+
+```{r}
+#加入content作为变量后可以进一步考虑单个话题词语对不同Keyword的偏向程度
+plot(femi_Content, type = "perspectives", topics = 3)
+```
+
+```{r}
+#这两个函数可以详细描述不同topic的高频词汇
+# labelTopics() Label topics by listing top words for selected topics 1 to 5.
+labelTopicsSel <- labelTopics(femi_Content, c(1:29),n=10)
+sink("labelTopics-selected.txt", append=FALSE, split=TRUE)
+print(labelTopicsSel)
+sink()
+
+# sageLabels() 比 labelTopics() 输出更详细
+sink("stm-list-sagelabel.txt", append=FALSE, split=TRUE)
+print(sageLabels(femi_Content,n=10))
+sink()
+```
+
+```{r}
+#计算不同话题与Keyword的相关度
+out$meta$Keyword<-as.factor(out$meta$Keyword)
+prep <- estimateEffect(1:29 ~ Keyword, femi_Content, meta=out$meta, uncertainty = "Global")
+summary(prep, topics=c(1:29))
+
+```
+```{r}
+#计算不同topic对总文本的贡献度
+plot(femi_Content, type = "summary", xlim = c(0, .15),mar=c(5,5,4,2))
+
+```
+
+```{r}
+#计算与呈现话题对不同Keyword的贡献度
+plot(prep, covariate = "Keyword", 
+     model = femi_Content, method = "difference",
+     cov.value1 = "0", cov.value2 = "1",
+     xlab = "女性主义——————————————————女权主义",
+     main = "女性主义 vs. 女权主义",
+     xlim = c(-.1, .1), labeltype = "custom",
+     )
+```
+
+```{r}
+#计算任意两个话题之间的词汇关联度
+plot(femi_Content, type = "perspectives", topics = c(11,9))
+```
+```{r}
+#计算不同关键词的文本贡献度随时间的变动
+prep_D <- estimateEffect(1:29 ~ Keyword+s(Date), femi_Content, meta=out$meta, uncertainty = "Global")
+plot(prep_D, covariate = "Date", model = femi_Content,
+     method = "continuous", xlab = "year", moderator = "Keyword",
+     moderator.value = "0", linecol = "blue", ylim = c(0, 0.1),
+     printlegend = FALSE)
+plot(prep_D, covariate = "Date", model = femi_Content,
+     method = "continuous", xlab = "year", moderator = "Keyword",
+     moderator.value = "1", linecol = "red", add = TRUE,
+     printlegend = FALSE)
+legend(0, 0.06, c("女性主义", "女权主义"),
+       lwd = 2, col = c("blue", "red"))
+```
+
+
+```{r}
+#根据话题关联度与相关关系进行聚类与网络化
+# topicCorr().
+# STM permits correlations between topics. Positive correlations between topics indicate
+# that both topics are likely to be discussed within a document. A graphical network
+# display shows how closely related topics are to one another (i.e., how likely they are
+# to appear in the same document). This function requires 'igraph' package.
+# see GRAPHICAL NETWORK DISPLAY of how closely related topics are to one another, (i.e., how likely they are to appear in the same document) Requires 'igraph' package
+mod.out.corr <- topicCorr(femi_Content)
+plot(mod.out.corr)
+```
+
+```{r}
+#在话题基础上进一步聚类形成可视化框架
+stmCorrViz(femi_Content, "stm-interactive-correlation.html", 
+           documents_raw=data$documents, documents_matrix=out$documents)
+```
+```{r}
+save.image("2024.5.26晚K=20.RData")
+```
+
+
