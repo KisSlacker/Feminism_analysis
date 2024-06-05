@@ -23,6 +23,6 @@ STM在python上好像还没有可以直接调用的库，因此这里采用R语�
 R代码会生成一个“cor_matrix.xlsx”文件，用于导入gephi制作语义网络图。  
 ## Acknowledgement
 感谢R语言 STM的最初作者：Roberts, M. E., Stewart, B. M., & Tingley, D. (2019). stm: An R Package for Structural Topic Models. Journal of Statistical Software, 91(2), 1–40. https://doi.org/10.18637/jss.v091.i02   
-感谢CSDN思想在拧紧，他用比较精干的语言描述了如何复现大部分原作者的代码，给我的研究节省了很多时间：   
+感谢CSDN思想在拧紧，他用比较精干的语言描述了如何复现大部分原作者的代码，给节省了很多时间：   
 https://blog.csdn.net/what_how_why2020/article/details/122889758   
 感谢人民大学新闻学院张伊妍老师细致的指导。  
